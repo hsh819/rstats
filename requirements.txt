@@ -1,0 +1,11 @@
+pandas>=2.0
+openpyxl>=3.1
+pdfplumber>=0.11
+pymupdf>=1.24
+matplotlib>=3.7
+openai>=1.40
+faiss-cpu>=1.8
+sentence-transformers>=2.7
+tenacity>=8.2
+tqdm>=4.66
+requests>=2.31

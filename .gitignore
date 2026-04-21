@@ -1,0 +1,19 @@
+# 原始数据 & PDF（体积大，由 scripts/fetch_data.py 拉取）
+data/
+
+# 派生产物
+db/finance.db
+db/validation_report.csv
+db/rag_chunks.pkl
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# 运行时
+.DS_Store
+.idea/
+.vscode/
