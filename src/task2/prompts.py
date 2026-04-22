@@ -74,19 +74,45 @@ NL2SQL_PROMPT_TEMPLATE = """\
 
 约束：
 1. 仅生成单条 SELECT 语句；禁止 INSERT / UPDATE / DELETE / DROP / ATTACH。
-2. 金额字段单位为「万元」，不要再自行乘除。
-3. 若涉及公司名称，优先用 stock_abbr 匹配。
-4. 返回 JSON：{{"sql": "…", "chart_type": "line|bar|pie|table"}}。
+2. 金额字段单位为「万元」，不要再自行乘除；百分比字段（毛利率/同比/资产负债率/ROE 等）数值即百分比本身。
+3. 若涉及公司名称，优先用 stock_abbr 匹配；股票代码用 stock_code。
+4. 时序排序使用 `ORDER BY report_year, CASE report_period WHEN 'Q1' THEN 1 WHEN 'HY' THEN 2 WHEN 'Q3' THEN 3 WHEN 'FY' THEN 4 END`。
+5. SELECT 列表必须包含 stock_abbr / report_year / report_period（如能取到）+ 目标字段。
+6. 返回 JSON：{{"sql": "…", "chart_type": "line|bar|pie|table"}}。
+
+# Few-shot 示例
+示例1
+问题：金花股份 2024年报 资产负债率
+SQL：SELECT stock_abbr, report_year, report_period, asset_liability_ratio FROM balance_sheet WHERE stock_abbr='金花股份' AND report_year=2024 AND report_period='FY'
+chart_type：table
+
+示例2
+问题：华润三九 近 3 年净利润趋势
+SQL：SELECT stock_abbr, report_year, report_period, net_profit FROM income_sheet WHERE stock_abbr='华润三九' AND report_period='FY' AND report_year>=2022 ORDER BY report_year
+chart_type：line
+
+示例3
+问题：2024 年净利润 top 10 中药公司
+SQL：SELECT stock_abbr, report_year, report_period, net_profit FROM income_sheet WHERE report_year=2024 AND report_period='FY' ORDER BY net_profit DESC LIMIT 10
+chart_type：bar
+
+示例4
+问题：华润三九与金花股份 2024年报 营业收入对比
+SQL：SELECT stock_abbr, report_year, report_period, total_operating_revenue FROM income_sheet WHERE stock_abbr IN ('华润三九','金花股份') AND report_year=2024 AND report_period='FY'
+chart_type：bar
 
 已知实体：{entities}
 用户问题：{question}
 """
 
 ANSWER_PROMPT_TEMPLATE = """\
-你是一个财经助手，请根据「问题」和「SQL 查询结果」写一段中文回答，不超过 80 字。
-若为单点查询：直接给出数值，带单位（万元 / %）。
-若为趋势：总结变化方向与量级。
-若为排名：列出 top 3 ~ 5。
+你是一个财经助手，请根据「问题」和「SQL 查询结果」写一段中文回答，不超过 100 字。
+要求：
+- 数值必须带单位（万元 / 元 / %）；金额带千分位。
+- 趋势类：先说总体变化方向（上升/下降），再给起止值与变化幅度。
+- 排名类：列出 top 3 名称与数值。
+- 对比类：明确两者差额与占比。
+- 不要复述 SQL；不要说"根据查询结果"。
 返回 JSON：{{"answer": "…"}}。
 
 问题：{question}

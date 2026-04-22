@@ -77,6 +77,36 @@ def to_wan_yuan(raw: object, src_unit: str = "元") -> Optional[float]:
     return round(v / 1e4, 2)
 
 
+def format_amount_wan(v: object) -> str:
+    """把值格式化为 "xxx.xx 万元"，带千分位。None → "—"。"""
+    n = parse_number(v)
+    if n is None:
+        return "—"
+    return f"{n:,.2f} 万元"
+
+
+def format_percent(v: object) -> str:
+    """把百分比数字格式化为 "xx.xx%"。值本身已是百分比（12.34 → 12.34%）。"""
+    n = parse_number(v)
+    if n is None:
+        return "—"
+    return f"{n:.2f}%"
+
+
+def format_auto(v: object, kind: str) -> str:
+    """按 kind ∈ {amount, percent, ratio, count, text} 自动格式化。"""
+    if kind == "percent":
+        return format_percent(v)
+    if kind == "ratio":
+        return format_percent(v)
+    if kind == "amount":
+        return format_amount_wan(v)
+    if kind == "count":
+        n = parse_number(v)
+        return "—" if n is None else f"{n:,.0f}"
+    return "—" if v is None else str(v)
+
+
 def detect_unit(header_text: str) -> str:
     """根据报表表头的"单位：元/万元/亿元"判断源单位。"""
     if not header_text:
