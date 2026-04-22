@@ -5,6 +5,10 @@ data/
 db/finance.db
 db/validation_report.csv
 db/rag_chunks.pkl
+db/rag_chunks_*.pkl
+
+# 研报截图（task3 渲染产物，体积大）
+result/refs/
 
 # Python
 __pycache__/

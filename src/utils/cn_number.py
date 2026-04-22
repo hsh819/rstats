@@ -78,11 +78,24 @@ def to_wan_yuan(raw: object, src_unit: str = "元") -> Optional[float]:
 
 
 def format_amount_wan(v: object) -> str:
-    """把值格式化为 "xxx.xx 万元"，带千分位。None → "—"。"""
+    """把值（单位：万元）按数量级换算后格式化，带千分位。None → "—"。
+
+    >= 1万亿元（= 1e8 万元） → "X.XX 万亿元"
+    >= 1亿元 （= 1e4 万元） → "X.XX 亿元"
+    >= 1万元                  → "X.XX 万元"
+    < 1万元                   → "X.XX 元"
+    """
     n = parse_number(v)
     if n is None:
         return "—"
-    return f"{n:,.2f} 万元"
+    abs_n = abs(n)
+    if abs_n >= 1e8:
+        return f"{n / 1e8:,.2f} 万亿元"
+    if abs_n >= 1e4:
+        return f"{n / 1e4:,.2f} 亿元"
+    if abs_n >= 1:
+        return f"{n:,.2f} 万元"
+    return f"{n * 1e4:,.2f} 元"
 
 
 def format_percent(v: object) -> str:

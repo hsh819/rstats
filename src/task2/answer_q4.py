@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import traceback
 from pathlib import Path
 from typing import Optional
 
 import pandas as pd
+from tqdm import tqdm
 
 from .. import config
 from ..llm_client import get_client
@@ -41,10 +43,12 @@ def _company_clause(companies: list[str]) -> str:
         return ""
     parts = []
     for c in companies:
-        if str(c).isdigit():
-            parts.append(f"stock_code='{c}'")
+        s = str(c)
+        if s.isdigit():
+            # 全部数据 stock_code 都是 6 位零填充
+            parts.append(f"stock_code='{s.zfill(6)}'")
         else:
-            parts.append(f"stock_abbr='{c}'")
+            parts.append(f"stock_abbr='{s}'")
     return " OR ".join(parts)
 
 
@@ -293,10 +297,10 @@ def process_question(qid: str, qtype: str, turns: list[dict], seq: int = 1) -> d
 # ========== 主入口 ==========
 def main(limit: Optional[int] = None):
     df = pd.read_excel(config.FILE_Q_TASK2)
+    if limit is not None:
+        df = df.head(limit)
     rows = []
-    for i, row in df.iterrows():
-        if limit is not None and i >= limit:
-            break
+    for _, row in tqdm(df.iterrows(), total=len(df), desc="task2"):
         qid = str(row["编号"]).strip()
         qtype = str(row["问题类型"]).strip()
         raw_q = row["问题"]
@@ -306,8 +310,19 @@ def main(limit: Optional[int] = None):
             turns = [{"Q": str(raw_q)}]
         if isinstance(turns, dict):
             turns = [turns]
-        print(f"[task2] {qid} {qtype}: {len(turns)} turns")
-        rows.append(process_question(qid, qtype, turns))
+        try:
+            rows.append(process_question(qid, qtype, turns))
+        except Exception as e:  # noqa: BLE001
+            tb = traceback.format_exc(limit=2)
+            print(f"[task2] {qid} FAILED: {e}\n{tb}")
+            rows.append({
+                "编号": qid, "问题类型": qtype,
+                "问题": json.dumps(turns, ensure_ascii=False),
+                "SQL 查询语句": "", "图形格式": "table",
+                "回答": json.dumps({"问题编号": qid, "问题类型": qtype, "子问题": [], "error": str(e)},
+                                   ensure_ascii=False),
+                "图表": "",
+            })
 
     write_task_results_with_images(
         RESULT_FILE,

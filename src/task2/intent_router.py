@@ -68,7 +68,11 @@ def rule_based(question: str) -> Intent:
     for a in load_known_abbrs():
         if a in q and a not in intent.companies:
             intent.companies.append(a)
-    for code in re.findall(r"(\d{6})", q):
+    # 股票代码 3-6 位（华润三九=999，部分公司代码不足 6 位）
+    for code in re.findall(r"(?<!\d)(\d{3,6})(?!\d)", q):
+        # 排除年份、占比百分号
+        if 1900 <= int(code) <= 2100 and len(code) == 4:
+            continue
         if code not in intent.companies:
             intent.companies.append(code)
     # 年份

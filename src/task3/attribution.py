@@ -109,11 +109,17 @@ def attribute(
     retriever: Retriever,
     query: str,
     filter_stock: Optional[str] = None,
+    filter_stock_code: Optional[str] = None,
     intent_fields: Optional[list[str]] = None,
 ) -> tuple[str, list[dict]]:
     keywords = extract_keywords(query, intent_fields)
-    reformulated = reformulate_query(query, keywords)
-    hits = retriever.search(reformulated, top_k=8, filter_stock=filter_stock)
+    # 短问题不调 LLM 改写
+    use_llm_rewrite = len(query) > 30
+    reformulated = reformulate_query(query, keywords, use_llm=use_llm_rewrite)
+    hits = retriever.search(
+        reformulated, top_k=8,
+        filter_stock=filter_stock, filter_stock_code=filter_stock_code,
+    )
     refs = build_references(hits, max_n=3)
     if not refs:
         return "未在研报中检索到相关内容", []

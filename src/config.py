@@ -3,7 +3,23 @@ import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-DATA_DIR = ROOT / "data" / "B题-示例数据"
+
+
+def _resolve_data_dir() -> Path:
+    """优先：环境变量 DATA_DIR > 全部数据 > 示例数据。"""
+    env = os.environ.get("DATA_DIR")
+    if env:
+        return Path(env)
+    full = ROOT / "data" / "B题-全部数据"
+    if full.exists():
+        return full
+    sample = ROOT / "data" / "B题-示例数据"
+    if not sample.exists():
+        print(f"[config] WARN: 数据目录不存在，请运行 scripts/fetch_data.py")
+    return sample
+
+
+DATA_DIR = _resolve_data_dir()
 DB_DIR = ROOT / "db"
 RESULT_DIR = ROOT / "result"
 DB_PATH = DB_DIR / "finance.db"

@@ -12,10 +12,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
+import traceback
 from pathlib import Path
 from typing import Optional
 
 import pandas as pd
+from tqdm import tqdm
 
 from .. import config
 from ..utils.excel_io import write_task_results_with_images
@@ -73,6 +76,20 @@ def _plot_if_any(records: list[dict], chart_fmt: str, qid: str, img_idx: int, ti
         return "", records
 
 
+def _resolve_stock_code(abbr: Optional[str]) -> Optional[str]:
+    if not abbr:
+        return None
+    try:
+        conn = sqlite3.connect(config.DB_PATH)
+        row = conn.execute("SELECT stock_code FROM companies WHERE stock_abbr=? LIMIT 1", (abbr,)).fetchone()
+        conn.close()
+        if row:
+            return row[0]
+    except sqlite3.Error:
+        return None
+    return None
+
+
 def process_question(qid: str, qtype: str, turns: list[dict], retriever: rag_index.Retriever) -> dict:
     structured_results: list[dict] = []
     all_refs: list[dict] = []
@@ -80,6 +97,7 @@ def process_question(qid: str, qtype: str, turns: list[dict], retriever: rag_ind
     last_chart_fmt = "table"
     img_idx = 0
     company_hint: Optional[str] = None
+    company_code_hint: Optional[str] = None
     last_image_name = ""
     last_paper_image = ""
 
@@ -113,14 +131,20 @@ def process_question(qid: str, qtype: str, turns: list[dict], retriever: rag_ind
                         id=f"{st.id}_rag", intent="attribution", query=st.query, depends_on=[st.id],
                     ))
                 for r in records:
-                    if "stock_abbr" in r and r.get("stock_abbr"):
+                    if r.get("stock_abbr") and not company_hint:
                         company_hint = str(r["stock_abbr"])
+                        company_code_hint = _resolve_stock_code(company_hint)
                         break
             elif st.intent == "attribution":
                 intent = intent_router.route(st.query, use_llm=False)
+                # 若 attribution 之前没出过结构化结果，从问题里再 resolve 一次公司
+                if not company_hint and intent.companies:
+                    company_hint = intent.companies[0]
+                    company_code_hint = _resolve_stock_code(company_hint)
                 summary, refs = attribution.attribute(
                     retriever, st.query,
                     filter_stock=company_hint,
+                    filter_stock_code=company_code_hint,
                     intent_fields=intent.fields,
                 )
                 structured_results.append({
@@ -152,13 +176,13 @@ def process_question(qid: str, qtype: str, turns: list[dict], retriever: rag_ind
     }
 
 
-def main(limit: Optional[int] = None):
-    retriever = rag_index.load_or_build(force=True)  # 本轮 chunk 结构变了，强制重建
+def main(limit: Optional[int] = None, force_rebuild: bool = False):
+    retriever = rag_index.load_or_build(force=force_rebuild)
     df = pd.read_excel(config.FILE_Q_TASK3)
+    if limit is not None:
+        df = df.head(limit)
     rows = []
-    for i, row in df.iterrows():
-        if limit is not None and i >= limit:
-            break
+    for _, row in tqdm(df.iterrows(), total=len(df), desc="task3"):
         qid = str(row["编号"]).strip()
         qtype = str(row["问题类型"]).strip()
         raw_q = row["问题"]
@@ -168,8 +192,20 @@ def main(limit: Optional[int] = None):
             turns = [{"Q": str(raw_q)}]
         if isinstance(turns, dict):
             turns = [turns]
-        print(f"[task3] {qid} {qtype}: {len(turns)} turns")
-        rows.append(process_question(qid, qtype, turns, retriever))
+        try:
+            rows.append(process_question(qid, qtype, turns, retriever))
+        except Exception as e:  # noqa: BLE001
+            tb = traceback.format_exc(limit=2)
+            print(f"[task3] {qid} FAILED: {e}\n{tb}")
+            rows.append({
+                "编号": qid, "问题类型": qtype,
+                "问题": json.dumps(turns, ensure_ascii=False),
+                "SQL 查询语句": "", "图形格式": "table",
+                "回答": json.dumps({"问题编号": qid, "问题类型": qtype,
+                                    "结构化结果": [], "references": [], "error": str(e)},
+                                   ensure_ascii=False),
+                "图表": "", "研报截图": "",
+            })
 
     write_task_results_with_images(
         RESULT_FILE,
@@ -186,5 +222,6 @@ def main(limit: Optional[int] = None):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=None)
+    ap.add_argument("--rebuild", action="store_true", help="强制重建 RAG 索引")
     args = ap.parse_args()
-    main(args.limit)
+    main(args.limit, force_rebuild=args.rebuild)

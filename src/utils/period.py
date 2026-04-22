@@ -24,15 +24,25 @@ class ReportKey:
     raw_filename: str = ""
 
 
-# 深交所：`公司简称：YYYY年<周期>报告[摘要].pdf`
+# 深交所：`公司简称：YYYY年<周期>报告[摘要][后缀].pdf`
+# 周期允许 "第一季度/一季度/第三季度/三季度/上半年/半年度/年度/中期"
+# 后缀允许 "（更新后）/（更正后）/全文" 等
 _SZ_RE = re.compile(
-    r"^(?P<abbr>[^：]+)[:：](?P<year>\d{4})年(?P<period>一季度|半年度|三季度|年度)报告(?P<summary>摘要)?"
+    r"^(?P<abbr>[^：:]+)[:：](?:(?P=abbr))?\s*(?P<year>\d{4})\s*年"
+    r"(?P<period>第一季度|一季度|第三季度|三季度|半年度|上半年|中期|年度)"
+    r"报告"
+    r"(?P<summary>摘要)?"
 )
 # 上交所：`<股票代码>_<YYYYMMDD>_<hash>.pdf`
 _SH_RE = re.compile(r"^(?P<code>\d{6})_(?P<date>\d{8})_[A-Z0-9]+")
 
 
-_SZ_PERIOD_MAP = {"一季度": "Q1", "半年度": "HY", "三季度": "Q3", "年度": "FY"}
+_SZ_PERIOD_MAP = {
+    "一季度": "Q1", "第一季度": "Q1",
+    "半年度": "HY", "上半年": "HY", "中期": "HY",
+    "三季度": "Q3", "第三季度": "Q3",
+    "年度": "FY",
+}
 
 
 def classify_filename(filename: str) -> Optional[ReportKey]:
