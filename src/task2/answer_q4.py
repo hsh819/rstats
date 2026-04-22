@@ -30,12 +30,35 @@ RESULT_FILE = config.RESULT_DIR / "result_2.xlsx"
 
 # ========== 规则侧 NL→SQL 回退（无 LLM 或 LLM 不返回时使用） ==========
 def _resolve_field(intent: intent_router.Intent) -> tuple[Optional[str], Optional[FieldMeta]]:
-    """返回 (canonical_name, FieldMeta) ；无命中返回 (None, None)。"""
+    """返回 (canonical_name, FieldMeta) ；无命中返回 (None, None)。
+
+    启发式：
+    - filter 单位是 "%"/"个百分点" → 优先返回百分比字段
+    - 其他情况下，按首个匹配返回，但把"净利润/营业收入"这类通用兜底字段放最后，
+      让更具体字段（如 经营活动现金流）优先。
+    """
+    if not intent.fields:
+        return None, None
+    prefer_percent = any(f.unit_hint in ("%", "个百分点") for f in intent.filters)
+    generic = {"净利润", "营业收入", "营业总收入"}
+
+    candidates = []
     for f in intent.fields:
         canon = canonical_field(f)
         if canon and canon in FIELD_META:
-            return canon, FIELD_META[canon]
-    return None, None
+            candidates.append((canon, FIELD_META[canon]))
+
+    if not candidates:
+        return None, None
+    if prefer_percent:
+        for c in candidates:
+            if c[1].kind in ("percent", "ratio"):
+                return c
+    # 非通用字段优先
+    for c in candidates:
+        if c[0] not in generic:
+            return c
+    return candidates[0]
 
 
 def _company_clause(companies: list[str]) -> str:
@@ -56,15 +79,61 @@ def _period_order_sql() -> str:
     return "CASE report_period WHEN 'Q1' THEN 1 WHEN 'HY' THEN 2 WHEN 'Q3' THEN 3 WHEN 'FY' THEN 4 END"
 
 
+# 单位 → 万元 换算倍数
+_UNIT_TO_WAN = {
+    "亿元": 10000, "亿": 10000,
+    "千万元": 1000, "千万": 1000,
+    "百万元": 100, "百万": 100,
+    "万元": 1, "万": 1,
+    "元": 0.0001,
+}
+
+
+def _filter_value_to_col_unit(f: "intent_router.Filter", fmeta: FieldMeta) -> float:
+    """把 filter.value 从原始单位换算到字段列自身单位（金额字段→万元；百分比字段→百分比原值）。"""
+    u = f.unit_hint
+    if fmeta.kind == "percent":
+        return f.value  # 值本身就是百分比
+    if fmeta.kind == "amount":
+        mul = _UNIT_TO_WAN.get(u, 1 if u in ("", "元") else 1)
+        if u == "元":
+            mul = 0.0001
+        return f.value * mul
+    return f.value
+
+
+def _filter_to_where(f: "intent_router.Filter", col: str, fmeta: FieldMeta) -> str:
+    if f.op == "<0":
+        return f"{col} < 0"
+    if f.op == ">0":
+        return f"{col} > 0"
+    v = _filter_value_to_col_unit(f, fmeta)
+    return f"{col} {f.op} {v}"
+
+
 def rule_nl2sql(intent: intent_router.Intent) -> tuple[str, str]:
-    """根据意图生成 SQL 与图表类型。无命中返回空串。"""
-    _, fmeta = _resolve_field(intent)
+    """根据意图生成 SQL 与图表类型。无命中返回空串。
+
+    支持：
+      - 基本查询 / 趋势 / 排名 / 对比
+      - Intent.filters: `field op value` WHERE 子句
+      - Intent.loss_flag: 自动 net_profit<0
+      - Intent.aggregate ∈ {AVG, SUM, MEDIAN, COUNT}
+    """
+    canon_name, fmeta = _resolve_field(intent)
+    has_aggregate = bool(intent.aggregate)
+
+    # 聚合分支：SELECT AVG/SUM/COUNT
+    if has_aggregate:
+        if not fmeta and intent.aggregate != "COUNT":
+            return "", "table"
+        return _rule_nl2sql_aggregate(intent, canon_name, fmeta)
+
     if not fmeta:
         return "", "table"
     table, col = fmeta.table, fmeta.column
 
     where_clauses: list[str] = []
-
     comp_clause = _company_clause(intent.companies)
     is_rank = intent.intent == "rank"
     if comp_clause:
@@ -76,25 +145,92 @@ def rule_nl2sql(intent: intent_router.Intent) -> tuple[str, str]:
         ps = ",".join(f"'{p}'" for p in intent.periods)
         where_clauses.append(f"report_period IN ({ps})")
     elif is_rank or intent.intent == "compare":
-        # 排名/对比若没指定期，默认看年报，避免多期混淆
         where_clauses.append("report_period='FY'")
 
-    select_cols = "stock_abbr, report_year, report_period, " + col
+    # filters → WHERE（值比较），并保证被比较的字段有 NOT NULL
+    seen_conds: set[str] = set()
+    for f in intent.filters:
+        cond = _filter_to_where(f, col, fmeta)
+        if cond not in seen_conds:
+            where_clauses.append(cond)
+            seen_conds.add(cond)
+    if intent.filters:
+        where_clauses.append(f"{col} IS NOT NULL")
+    # 亏损 / 为负：对所选字段加 <0（若还没被 filters 覆盖）
+    if intent.loss_flag:
+        cond = f"{col} < 0"
+        if cond not in seen_conds:
+            where_clauses.append(cond)
+            seen_conds.add(cond)
+
+    select_cols = "stock_abbr, stock_code, report_year, report_period, " + col
     sql = f"SELECT {select_cols} FROM {table}"
     if where_clauses:
         sql += " WHERE " + " AND ".join(where_clauses)
 
     if is_rank:
         sql += f" ORDER BY {col} DESC LIMIT 10"
+    elif intent.filters or intent.loss_flag:
+        # 筛选查询：按值降序便于阅读
+        sql += f" ORDER BY {col} DESC LIMIT 50"
     else:
         sql += f" ORDER BY stock_code, report_year, {_period_order_sql()}"
 
     chart_type = (
         "line" if intent.intent == "trend"
-        else "bar" if intent.intent in ("rank", "compare")
+        else "bar" if intent.intent in ("rank", "compare") or intent.filters or intent.loss_flag
         else "table"
     )
     return sql, chart_type
+
+
+def _rule_nl2sql_aggregate(intent: "intent_router.Intent",
+                           canon_name: Optional[str], fmeta: Optional[FieldMeta]) -> tuple[str, str]:
+    """AVG / SUM / COUNT / MEDIAN 走独立分支。"""
+    agg = intent.aggregate
+
+    # COUNT：统计满足条件的行数
+    if agg == "COUNT":
+        table = fmeta.table if fmeta else "core_performance_indicators_sheet"
+        where: list[str] = []
+        if intent.years:
+            where.append(f"report_year IN ({','.join(str(y) for y in intent.years)})")
+        if intent.periods:
+            where.append(f"report_period IN ({','.join(chr(39)+p+chr(39) for p in intent.periods)})")
+        seen: set[str] = set()
+        if fmeta:
+            col = fmeta.column
+            for f in intent.filters:
+                cond = _filter_to_where(f, col, fmeta)
+                if cond not in seen:
+                    where.append(cond); seen.add(cond)
+            if intent.loss_flag:
+                cond = f"{col} < 0"
+                if cond not in seen:
+                    where.append(cond); seen.add(cond)
+            where.append(f"{col} IS NOT NULL")
+        sql = f"SELECT COUNT(*) AS 数量 FROM {table}"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        return sql, "table"
+
+    # AVG / SUM / MEDIAN：SQLite 无 MEDIAN 内置，近似用 AVG（只是统计意义上的简化）
+    assert fmeta is not None
+    table, col = fmeta.table, fmeta.column
+    sql_agg = {"AVG": f"AVG({col})", "SUM": f"SUM({col})", "MEDIAN": f"AVG({col})"}[agg]
+    label = {"AVG": "均值", "SUM": "总和", "MEDIAN": "中位数(近似=AVG)"}[agg]
+
+    where: list[str] = [f"{col} IS NOT NULL"]
+    if intent.years:
+        where.append(f"report_year IN ({','.join(str(y) for y in intent.years)})")
+    if intent.periods:
+        where.append(f"report_period IN ({','.join(chr(39)+p+chr(39) for p in intent.periods)})")
+    for f in intent.filters:
+        where.append(_filter_to_where(f, col, fmeta))
+    sql = f"SELECT {sql_agg} AS {col}_{agg.lower()} FROM {table}"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    return sql, "table"
 
 
 # ========== LLM 侧 NL→SQL（若可用） ==========
@@ -146,6 +282,24 @@ def rule_answer(question: str, cols: list[str], rows: list[tuple], chart_type: s
     field_zh = field_name or "数值"
     value_col = fmeta.column if fmeta else cols[-1]
 
+    # 聚合单值结果：cols 只有一列 aggregate 结果
+    if len(cols) == 1 and len(records) == 1:
+        col_name = cols[0]
+        v = records[0].get(col_name)
+        if col_name == "数量":
+            return f"共 {v} 家"
+        agg_kind = kind
+        label = _value_label(v, agg_kind)
+        # 尝试从 col 推断聚合类型
+        suffix = ""
+        if col_name.endswith("_avg"):
+            suffix = "均值"
+        elif col_name.endswith("_sum"):
+            suffix = "总和"
+        elif col_name.endswith("_median"):
+            suffix = "中位数"
+        return f"{field_zh}{suffix}：{label}"
+
     # 单点查询
     if intent_type == "query" and len(records) == 1:
         r = records[0]
@@ -154,6 +308,13 @@ def rule_answer(question: str, cols: list[str], rows: list[tuple], chart_type: s
         v = _value_label(r.get(value_col), kind)
         prefix = f"{comp} {period}".strip()
         return (f"{prefix}的{field_zh}为 {v}" if prefix else f"{field_zh}为 {v}")
+
+    # 筛选列表（带 filter 的查询）：列出前 5 家
+    if intent_type == "query" and len(records) > 1:
+        head = records[: min(5, len(records))]
+        items = [f"{r.get('stock_abbr','')}({r.get('stock_code','')}) {_value_label(r.get(value_col), kind)}"
+                 for r in head]
+        return f"符合条件共 {len(records)} 家，前{len(head)}：" + "; ".join(items)
 
     # 排名
     if intent_type == "rank":
