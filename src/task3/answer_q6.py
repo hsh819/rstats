@@ -23,7 +23,7 @@ from tqdm import tqdm
 from .. import config
 from ..utils.excel_io import write_task_results_with_images
 from ..utils.period import period_label
-from ..task2 import answer_q4 as t2, intent_router, sql_runner
+from ..task2 import advanced_rules, answer_q4 as t2, intent_router, sql_runner
 from . import attribution, planner, rag_index
 
 RESULT_FILE = config.RESULT_DIR / "result_3.xlsx"
@@ -34,6 +34,10 @@ def _run_structured(question: str) -> tuple[str, str, list[dict]]:
     intent = intent_router.route(question, use_llm=False)
     sql, chart_fmt = t2.llm_nl2sql(question, intent)
     if not sql:
+        adv = advanced_rules.try_build(intent, question)
+        if adv:
+            sql, chart_fmt = adv
+    if not sql:
         sql, chart_fmt = t2.rule_nl2sql(intent)
     if not sql:
         return "", chart_fmt, []
@@ -43,6 +47,9 @@ def _run_structured(question: str) -> tuple[str, str, list[dict]]:
         print(f"[task3] sql fail: {e}")
         return sql, chart_fmt, []
     records = sql_runner.rows_to_records(cols, rows)
+    if chart_fmt == "hist_cagr":
+        records = advanced_rules.cagr_post_process(records)
+        chart_fmt = "hist"
     return sql, chart_fmt, records
 
 

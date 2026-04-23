@@ -58,6 +58,36 @@ def auto_plot(
     if not records:
         ax.text(0.5, 0.5, "无数据", ha="center", va="center", fontsize=14)
         ax.axis("off")
+    elif chart_type == "hist":
+        # 直方图：y_field 的分布
+        y_use = y_field or list(records[0].keys())[-1]
+        values = [float(r.get(y_use)) for r in records if r.get(y_use) is not None]
+        if values:
+            ax.hist(values, bins=min(20, max(5, len(values) // 3)), edgecolor="white")
+            ax.set_xlabel(str(y_use))
+            ax.set_ylabel("公司数")
+            if is_pct:
+                ax.xaxis.set_major_formatter(_percent_formatter())
+        else:
+            ax.text(0.5, 0.5, "无数据", ha="center", va="center", fontsize=14)
+            ax.axis("off")
+    elif chart_type == "scatter":
+        # 散点图：优先取后两个数值列
+        keys = list(records[0].keys())
+        def _numeric(k):
+            return any(isinstance(r.get(k), (int, float)) for r in records)
+        num_keys = [k for k in keys if _numeric(k) and k not in ("stock_code", "report_year")]
+        x_use = x_field if x_field in num_keys else (num_keys[-2] if len(num_keys) >= 2 else keys[0])
+        y_use = y_field if y_field in num_keys else (num_keys[-1] if num_keys else keys[-1])
+        xs = [float(r.get(x_use)) for r in records if r.get(x_use) is not None and r.get(y_use) is not None]
+        ys = [float(r.get(y_use)) for r in records if r.get(x_use) is not None and r.get(y_use) is not None]
+        if xs and ys:
+            ax.scatter(xs, ys, s=20, alpha=0.7)
+            ax.set_xlabel(str(x_use))
+            ax.set_ylabel(str(y_use))
+        else:
+            ax.text(0.5, 0.5, "无数据", ha="center", va="center", fontsize=14)
+            ax.axis("off")
     elif chart_type == "pie":
         x_use = x_field or list(records[0].keys())[0]
         y_use = y_field or list(records[0].keys())[-1]

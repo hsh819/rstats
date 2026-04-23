@@ -22,7 +22,7 @@ from ..llm_client import get_client
 from ..utils.cn_number import format_amount_wan, format_auto, format_percent, parse_number
 from ..utils.excel_io import write_task_results_with_images
 from ..utils.period import period_label
-from . import chart, dialogue, intent_router, prompts, sql_runner
+from . import advanced_rules, chart, dialogue, intent_router, prompts, sql_runner
 from .field_schema import FIELD_META, FieldMeta, canonical_field
 
 RESULT_FILE = config.RESULT_DIR / "result_2.xlsx"
@@ -392,6 +392,11 @@ def process_question(qid: str, qtype: str, turns: list[dict], seq: int = 1) -> d
 
         sql, chart_type = llm_nl2sql(q, intent)
         if not sql:
+            # 高级规则：多表 JOIN、差值 Top-N、比值分布、散点、CAGR 等
+            adv = advanced_rules.try_build(intent, q)
+            if adv:
+                sql, chart_type = adv
+        if not sql:
             sql, chart_type = rule_nl2sql(intent)
         if not sql:
             sub_results.append({"Q": q, "A": "信息不足，无法生成 SQL", "SQL": "", "image": ""})
@@ -404,6 +409,11 @@ def process_question(qid: str, qtype: str, turns: list[dict], seq: int = 1) -> d
             continue
 
         records = sql_runner.rows_to_records(cols, rows)
+
+        # CAGR 需要 post-process（多行 → 每公司 CAGR）
+        if chart_type == "hist_cagr":
+            records = advanced_rules.cagr_post_process(records)
+            chart_type = "hist"
 
         # 出图
         img_name = ""

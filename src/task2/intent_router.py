@@ -239,15 +239,24 @@ def rule_based(question: str) -> Intent:
     # 澄清逻辑
     has_aggregate = bool(intent.aggregate)
     has_filters = bool(intent.filters) or intent.loss_flag
-    # 聚合/筛选类不强求 company
+    # 多字段 + 比较/差值关键字 = 跨字段/跨表查询，不强求 company
+    has_cross_field = len(intent.fields) >= 2 and any(
+        w in q for w in ("超过", "大于", "高于", "不一致", "不符", "差值", "差异", "相关", "散点",
+                         "分布", "比值", "比例", "比率", "对比", "相比", "前十", "前五", "复合增长率")
+    )
+    # 分析类意图（分布/散点/对比/复合增长率/相关性）也不强求 company
+    has_analytic = any(w in q for w in ("分布", "直方图", "散点", "相关性", "复合增长率", "CAGR"))
+
+    bypass_clarify = has_aggregate or has_filters or has_cross_field or has_analytic
+
     if intent.intent == "query":
-        if not intent.companies and not has_aggregate and not has_filters:
+        if not intent.companies and not bypass_clarify:
             intent.need_clarify = True
             intent.clarify_question = "请问要查询哪家公司？"
         elif not intent.fields:
             intent.need_clarify = True
             intent.clarify_question = "请问要查询哪个财务指标？"
-    elif intent.intent == "trend" and not intent.companies and not has_aggregate:
+    elif intent.intent == "trend" and not intent.companies and not bypass_clarify:
         intent.need_clarify = True
         intent.clarify_question = "请问要分析哪家公司的趋势？"
     return intent
