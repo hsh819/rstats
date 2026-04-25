@@ -23,7 +23,7 @@ from tqdm import tqdm
 
 from .. import config
 from ..utils.period import ReportKey, period_sort_key
-from . import pdf_parser, report_classifier, validator
+from . import derived_fields, pdf_parser, report_classifier, validator
 
 
 # ============ DB 字段集合（保证 INSERT 时字段齐全） ============
@@ -248,6 +248,12 @@ def run(only_stock: Optional[str] = None, jobs: Optional[int] = None, verbose: b
         )
         all_validations.extend(entries)
     conn.commit()
+
+    # 派生字段回填（资产负债率/毛利率/净利率/同比/环比）
+    print("[5/5] 派生字段回填")
+    stats = derived_fields.derive_missing_fields(conn)
+    for k, v in stats.items():
+        print(f"  {k}: +{v} 行")
 
     # 写 validation_report
     for e in all_validations:

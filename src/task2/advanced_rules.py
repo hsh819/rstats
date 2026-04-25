@@ -339,6 +339,122 @@ def _pat_dual_year_rank_compare(intent: intent_router.Intent, q: str) -> Optiona
     return sql, "bar"
 
 
+# ===== Pattern 9: 单字段绝对值 Top-N（"波动最大 / 绝对值最大"）=====
+def _pat_volatility_top(intent: intent_router.Intent, q: str) -> Optional[tuple[str, str]]:
+    """如 "净利润同比增长率 波动最大 (绝对值最大) 的公司"。
+
+    与 _pat_diff_top_n 不同：本模板针对单字段的 ABS 排序，无需两字段。
+    触发：含"波动最大/最小"或"绝对值最大/最小"。
+    """
+    if not any(w in q for w in ("波动最大", "波动最小", "绝对值最大", "绝对值最小")):
+        return None
+    fields = _extract_fields(q, k=1)
+    if not fields:
+        return None
+    f = FIELD_META[fields[0]]
+    asc_desc = "ASC" if ("最小" in q) else "DESC"
+    # 默认 5 家；若有 "前 N"
+    m = re.search(r"(?:前|top|Top|TOP)\s*(\d+)", q)
+    n = int(m.group(1)) if m else (1 if "哪家" in q else 5)
+
+    yp = _year_period_where(intent)
+    where = f"{yp + ' AND ' if yp else ''}{f.column} IS NOT NULL"
+    sql = (
+        f"SELECT stock_abbr, stock_code, report_year, report_period, "
+        f"{f.column}, ABS({f.column}) AS abs_value "
+        f"FROM {f.table} WHERE {where} "
+        f"ORDER BY abs_value {asc_desc} LIMIT {n}"
+    )
+    return sql, "bar"
+
+
+# ===== Pattern 10: 连续 N 期满足条件 =====
+_CN_NUM = {"两": 2, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6}
+
+
+def _pat_consecutive_periods(intent: intent_router.Intent, q: str) -> Optional[tuple[str, str]]:
+    """如 "连续四个报告期 扣非净利润 均超过 5000万 的公司"
+       或 "连续保持正增长 的公司"。
+
+    用 GROUP BY stock_code HAVING COUNT(...) >= N 实现。
+    """
+    if not re.search(r"连续\s*(?:[2-9]|两|二|三|四|五|六)?\s*(?:个)?(?:报告期|期|季度)?", q):
+        return None
+    if not any(w in q for w in ("连续", "保持")):
+        return None
+    fields = _extract_fields(q, k=1)
+    if not fields:
+        return None
+    f = FIELD_META[fields[0]]
+
+    # "正增长 / 负增长 / 增长率" 语境下，把金额字段切到对应的同比字段
+    AMOUNT_TO_YOY = {
+        "营业总收入": "营业收入同比",
+        "营业收入": "营业收入同比",
+        "净利润": "净利润同比",
+        "总资产": "总资产同比",
+        "总负债": "总负债同比",
+    }
+    if any(w in q for w in ("正增长", "负增长", "增长率", "同比")):
+        yoy_canon = AMOUNT_TO_YOY.get(fields[0])
+        if yoy_canon and yoy_canon in FIELD_META:
+            f = FIELD_META[yoy_canon]
+
+    # 解析数字
+    n_match = re.search(r"连续\s*(\d+|两|二|三|四|五|六)\s*(?:个)?\s*(?:报告期|期|季度)", q)
+    if n_match:
+        token = n_match.group(1)
+        n = int(token) if token.isdigit() else _CN_NUM.get(token, 4)
+    else:
+        n = 4  # 默认 4 期
+
+    # 条件
+    if "正增长" in q or "为正" in q or "保持正" in q:
+        cond = f"{f.column} > 0"
+    elif "为负" in q or "负增长" in q:
+        cond = f"{f.column} < 0"
+    elif intent.filters:
+        ff = intent.filters[0]
+        if ff.op in (">", "<", ">=", "<=") and f.kind in ("amount", "percent", "ratio"):
+            from .answer_q4 import _filter_value_to_col_unit
+            v = _filter_value_to_col_unit(ff, f)
+            cond = f"{f.column} {ff.op} {v}"
+        elif ff.op == "<0":
+            cond = f"{f.column} < 0"
+        elif ff.op == ">0":
+            cond = f"{f.column} > 0"
+        else:
+            cond = f"{f.column} > 0"
+    else:
+        cond = f"{f.column} > 0"
+
+    # 起止年份范围（连续N期场景特殊：从问题里直接抽 "2022-2025" 这类区间）
+    yp_parts: list[str] = []
+    range_match = re.search(r"(20\d{2})\s*[-—~至到]\s*(20\d{2})", q)
+    if range_match:
+        y0, y1 = sorted((int(range_match.group(1)), int(range_match.group(2))))
+        yp_parts.append(f"report_year BETWEEN {y0} AND {y1}")
+    elif intent.years:
+        yp_parts.append(f"report_year IN ({','.join(str(y) for y in intent.years)})")
+    # 连续 N 期通常跨多个 period，不限制 report_period
+    yp = " AND ".join(yp_parts)
+
+    where = f"{cond}"
+    if yp:
+        where = f"{yp} AND {where}"
+    where = f"({where}) AND {f.column} IS NOT NULL"
+
+    sql = (
+        f"SELECT stock_abbr, stock_code, COUNT(*) AS 满足期数 "
+        f"FROM {f.table} "
+        f"WHERE {where} "
+        f"GROUP BY stock_code, stock_abbr "
+        f"HAVING COUNT(*) >= {n} "
+        f"ORDER BY 满足期数 DESC LIMIT 50"
+    )
+    return sql, "bar"
+
+
 _PATTERNS = [
     _pat_cross_table_inconsistency,  # "不一致"
     _pat_diff_top_n,                  # "差值最大 Top N"
@@ -347,6 +463,8 @@ _PATTERNS = [
     _pat_ratio_hist,                  # "比值 分布 直方图"
     _pat_correlation_scatter,         # "相关性 散点"
     _pat_dual_year_rank_compare,      # "对比 两年 Top N"
+    _pat_volatility_top,              # "波动最大 / 绝对值最大"（新增）
+    _pat_consecutive_periods,         # "连续 N 期" / "连续保持正增长"（新增）
     _pat_two_field_compare,           # "A 超过 B"（兜底，因此排最后）
 ]
 

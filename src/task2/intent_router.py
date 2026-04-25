@@ -171,15 +171,23 @@ def rule_based(question: str) -> Intent:
     for a in known:
         if a in q and a not in intent.companies:
             intent.companies.append(a)
-    # 股票代码 3-6 位（避免把"200亿/30%/20万元/66家"里的数字当代码）
+    # 股票代码 3-6 位（避免把"200亿/30%/20万元/66家/×100/100元"里的数字当代码）
     for m in re.finditer(r"(?<!\d)(\d{3,6})(?!\d)", q):
         code = m.group(1)
         tail_idx = m.end()
+        prev_idx = m.start()
         trailing = q[tail_idx: tail_idx + 2]
+        prev_char = q[prev_idx - 1] if prev_idx > 0 else ""
         # 紧跟单位/量词/百分号 → 是数值而不是代码
         if trailing and trailing[0] in ("亿", "万", "%", "元", "家", "个", "年", "月", "季", "位", "名", "倍"):
             continue
+        # 紧前是数学运算符或括号 → 是公式中的常数
+        if prev_char in ("*", "/", "+", "-", "×", "÷", "（", "(", "．", "."):
+            continue
         if 1900 <= int(code) <= 2100 and len(code) == 4:
+            continue
+        # 常见公式常数（×100 / ×1000 等转百分比/千分比）
+        if code in ("100", "1000", "10000"):
             continue
         if code not in intent.companies:
             intent.companies.append(code)
@@ -245,7 +253,9 @@ def rule_based(question: str) -> Intent:
                          "分布", "比值", "比例", "比率", "对比", "相比", "前十", "前五", "复合增长率")
     )
     # 分析类意图（分布/散点/对比/复合增长率/相关性）也不强求 company
-    has_analytic = any(w in q for w in ("分布", "直方图", "散点", "相关性", "复合增长率", "CAGR"))
+    has_analytic = any(w in q for w in ("分布", "直方图", "散点", "相关性", "复合增长率", "CAGR",
+                                         "波动最大", "波动最小", "绝对值最大", "绝对值最小",
+                                         "连续保持", "连续四个", "连续三个", "连续四期", "连续三期"))
 
     bypass_clarify = has_aggregate or has_filters or has_cross_field or has_analytic
 
