@@ -9,6 +9,11 @@ db/rag_chunks_*.pkl
 
 # 研报截图（task3 渲染产物，体积大）
 result/refs/
+test/refs/
+
+# 测试集派生产物
+test/db/finance.db
+test/db/rag_chunks_*.pkl
 
 # Python
 __pycache__/

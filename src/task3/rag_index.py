@@ -184,7 +184,7 @@ class Retriever:
         return out
 
 
-CACHE_DIR = config.ROOT / "db"
+CACHE_DIR = config.DB_DIR
 
 
 def _cache_key() -> str:
